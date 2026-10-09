@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: devsecops
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins-sa
+  namespace: devsecops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-role
+  namespace: devsecops
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log"]
+    verbs: ["create", "delete", "get", "list", "patch", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-rb
+  namespace: devsecops
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-sa
+    namespace: devsecops
+roleRef:
+  kind: Role
+  name: jenkins-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-service
+  namespace: devsecops
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30080
+      name: ui
+    - port: 50000
+      targetPort: 50000
+      nodePort: 30500
+      name: agent
+  selector:
+    app: jenkins
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins
+  namespace: devsecops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins
+  template:
+    metadata:
+      labels:
+        app: jenkins
+    spec:
+      serviceAccountName: jenkins-sa
+      containers:
+        - name: jenkins
+          # FIX: используем кастомный образ с предустановленными плагинами
+          # вместо установки при каждом запуске через jenkins-plugin-cli в command.
+          # Было: jenkins-plugin-cli в args → медленно, нет сети = нет плагинов
+          # Стало: плагины запекаются в образ при сборке (см. jenkins/Dockerfile)
+          image: jenkins-devsecops:latest
+          imagePullPolicy: Never   # образ собирается локально, не тянем из registry
+          ports:
+            - containerPort: 8080
+            - containerPort: 50000
+          env:
+            - name: JAVA_OPTS
+              value: >-
+                -Djenkins.install.runSetupWizard=false
+                -Dhudson.model.DirectoryBrowserSupport.CSP=
+            - name: CASC_JENKINS_CONFIG
+              value: "/var/jenkins_home/casc.yaml"
+          volumeMounts:
+            - name: jenkins-home
+              mountPath: /var/jenkins_home
+            - name: casc-config
+              mountPath: /var/jenkins_home/casc.yaml
+              subPath: casc.yaml
+            - name: casc-config
+              mountPath: /var/jenkins_home/jobs.groovy
+              subPath: jobs.groovy
+            - name: jenkinsfile-config
+              mountPath: /var/jenkins_home/Jenkinsfile
+              subPath: Jenkinsfile
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1500m"
+      volumes:
+        # FIX: PVC вместо emptyDir — данные переживают перезапуск пода
+        # При emptyDir: плагины, credentials и история сборок терялись при каждом рестарте
+        - name: jenkins-home
+          persistentVolumeClaim:
+            claimName: jenkins-home
+        - name: casc-config
+          configMap:
+            name: jenkins-casc-config
+            items:
+              - key: casc.yaml
+                path: casc.yaml
+              - key: jobs.groovy
+                path: jobs.groovy
+        - name: jenkinsfile-config
+          configMap:
+            name: jenkins-jenkinsfile

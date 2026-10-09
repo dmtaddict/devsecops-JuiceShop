@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jenkins-casc-config
+  namespace: devsecops
+data:
+  casc.yaml: |
+    jenkins:
+      securityRealm:
+        local:
+          allowsSignup: false
+          users:
+            - id: "admin"
+              password: "admin"
+
+      authorizationStrategy:
+        loggedInUsersCanDoAnything:
+          allowAnonymousRead: false
+
+      numExecutors: 0
+
+      clouds:
+        - kubernetes:
+            name: "kubernetes"
+            serverUrl: "https://kubernetes.default.svc.cluster.local"
+            namespace: "devsecops"
+            jenkinsUrl: "http://jenkins-service.devsecops.svc.cluster.local:8080"
+            jenkinsTunnel: "jenkins-service.devsecops.svc.cluster.local:50000"
+            connectTimeout: 300
+            readTimeout: 300
+            podRetention: "never"
+            containerCapStr: "10"
+
+    unclassified:
+      location:
+        url: "http://jenkins-service.devsecops.svc.cluster.local:8080"
+
+    jobs:
+      - file: /var/jenkins_home/jobs.groovy
+ 
+  jobs.groovy: |
+    pipelineJob('devsecops-JuiceShop') {
+      description('DevSecOps pipeline for OWASP Juice Shop on Kubernetes (kind). Reads Jenkinsfile from local ConfigMap, NOT from git. Click Build Now to start.')
+      definition {
+        cps {
+          script(new File('/var/jenkins_home/Jenkinsfile').text)
+          sandbox(true)
+        }
+      }
+    }
